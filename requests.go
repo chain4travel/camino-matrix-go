@@ -21,6 +21,7 @@ const (
 	AuthTypeToken      AuthType = "m.login.token"
 	AuthTypeDummy      AuthType = "m.login.dummy"
 	AuthTypeAppservice AuthType = "m.login.application_service"
+	AuthTypeCamino     AuthType = "m.login.camino"
 )
 
 type IdentifierType string
@@ -78,6 +79,8 @@ type ReqLogin struct {
 	Token                    string         `json:"token,omitempty"`
 	DeviceID                 id.DeviceID    `json:"device_id,omitempty"`
 	InitialDeviceDisplayName string         `json:"initial_device_display_name,omitempty"`
+	PublicKey                string         `json:"public_key,omitempty"`
+	Signature                string         `json:"signature,omitempty"`
 
 	// Whether or not the returned credentials should be stored in the Client
 	StoreCredentials bool `json:"-"`
