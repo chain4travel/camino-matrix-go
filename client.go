@@ -17,6 +17,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/exp/slices"
+
+	"github.com/ava-labs/avalanchego/utils/formatting"
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/retryafter"
 	"maunium.net/go/maulogger/v2/maulogadapt"
@@ -425,6 +428,34 @@ func (cli *Client) MakeFullRequest(ctx context.Context, params FullRequest) ([]b
 	return cli.executeCompiledRequest(req, params.MaxAttempts-1, 4*time.Second, params.ResponseJSON, params.Handler)
 }
 
+func (cli *Client) MakeFullRequestExtended(ctx context.Context, params FullRequest, allowedCodes []int) ([]byte, error) {
+	if params.MaxAttempts == 0 {
+		params.MaxAttempts = 1 + cli.DefaultHTTPRetries
+	}
+	if params.Logger == nil {
+		params.Logger = &cli.Log
+	}
+	req, err := params.compileRequest(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if params.Handler == nil {
+		params.Handler = handleNormalResponse
+	}
+	req.Header.Set("User-Agent", cli.UserAgent)
+	if len(cli.AccessToken) > 0 {
+		req.Header.Set("Authorization", "Bearer "+cli.AccessToken)
+	}
+	return cli.executeCompiledRequestExtended(
+		req,
+		params.MaxAttempts-1,
+		4*time.Second,
+		params.ResponseJSON,
+		params.Handler,
+		allowedCodes,
+	)
+}
+
 func (cli *Client) cliOrContextLog(ctx context.Context) *zerolog.Logger {
 	log := zerolog.Ctx(ctx)
 	if log.GetLevel() == zerolog.Disabled || log == zerolog.DefaultContextLogger {
@@ -568,6 +599,43 @@ func (cli *Client) executeCompiledRequest(req *http.Request, retries int, backof
 	} else {
 		body, err = handler(req, res, responseJSON)
 		cli.LogRequestDone(req, res, nil, err, len(body), duration)
+	}
+	return body, err
+}
+
+func (cli *Client) executeCompiledRequestExtended(req *http.Request, retries int, backoff time.Duration, responseJSON interface{}, handler ClientResponseHandler, allowedCodes []int) ([]byte, error) {
+	cli.RequestStart(req)
+	startTime := time.Now()
+	res, err := cli.Client.Do(req)
+	duration := time.Now().Sub(startTime)
+	if res != nil {
+		defer res.Body.Close()
+	}
+	if err != nil {
+		if retries > 0 {
+			return cli.doRetry(req, err, retries, backoff, responseJSON, handler)
+		}
+		return nil, HTTPError{
+			Request:  req,
+			Response: res,
+
+			Message:      "request error",
+			WrappedError: err,
+		}
+	}
+
+	if retries > 0 && retryafter.Should(res.StatusCode, !cli.IgnoreRateLimit) {
+		backoff = retryafter.Parse(res.Header.Get("Retry-After"), backoff)
+		return cli.doRetry(req, fmt.Errorf("HTTP %d", res.StatusCode), retries, backoff, responseJSON, handler)
+	}
+
+	var body []byte
+	if !slices.Contains(allowedCodes, res.StatusCode) && (res.StatusCode < 200 || res.StatusCode >= 300) {
+		var body []byte
+		body, err = ParseErrorResponse(req, res)
+		cli.LogRequestDone(req, res, err, nil, len(body), duration)
+	} else {
+		cli.LogRequestDone(req, res, nil, nil, -1, duration)
 	}
 	return body, err
 }
@@ -769,15 +837,71 @@ func (cli *Client) GetLoginFlows(ctx context.Context) (resp *RespLoginFlows, err
 }
 
 // Login a user to the homeserver according to https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3login
-func (cli *Client) Login(ctx context.Context, req *ReqLogin) (resp *RespLogin, err error) {
-	_, err = cli.MakeFullRequest(ctx, FullRequest{
-		Method:           http.MethodPost,
-		URL:              cli.BuildClientURL("v3", "login"),
-		RequestJSON:      req,
-		ResponseJSON:     &resp,
-		SensitiveContent: len(req.Password) > 0 || len(req.Token) > 0,
-	})
-	if req.StoreCredentials && err == nil {
+func (cli *Client) Login(ctx context.Context, req *ReqLogin) (resp *RespLogin, retErr error) {
+	if req.CaminoKey != nil { // uiaa with camino challenge request
+		uiaaResp := RespUserInteractive{}
+		if _, err := cli.MakeFullRequestExtended(ctx, FullRequest{
+			Method:           http.MethodPost,
+			URL:              cli.BuildClientURL("v3", "login"),
+			RequestJSON:      req,
+			ResponseJSON:     &uiaaResp,
+			SensitiveContent: len(req.Password) > 0 || len(req.Token) > 0,
+		}, []int{401}); err != nil {
+			return nil, err
+		}
+
+		caminoUIAAParamsIntf, ok := uiaaResp.Params[AuthTypeCamino]
+		if !ok {
+			return nil, errors.New("missing camino auth uiaa params")
+		}
+		caminoUIAAParams, ok := caminoUIAAParamsIntf.(map[string]interface{})
+		if !ok {
+			return nil, errors.New("camino auth uiaa params have unexpected type")
+		}
+
+		payloadIntf, ok := caminoUIAAParams["payload"]
+		if !ok {
+			return nil, errors.New("missing camino auth uiaa params payload field")
+		}
+		payload, ok := payloadIntf.(string)
+		if !ok {
+			return nil, errors.New("camino auth uiaa params payload has unexpected type")
+		}
+
+		signatureBytes, err := req.CaminoKey.Sign([]byte(payload))
+		if err != nil {
+			return nil, err
+		}
+		signature, err := formatting.Encode(formatting.Hex, signatureBytes)
+		if err != nil {
+			return nil, err
+		}
+
+		_, retErr = cli.MakeFullRequest(ctx, FullRequest{
+			Method: http.MethodPost,
+			URL:    cli.BuildClientURL("v3", "login"),
+			RequestJSON: &ReqLogin{
+				Identifier: req.Identifier,
+				Auth: &ReqUIAuthCamino{
+					BaseAuthData: BaseAuthData{
+						Type:    AuthTypeCamino,
+						Session: uiaaResp.Session,
+					},
+					Signature: signature[2:],
+				},
+			},
+			ResponseJSON: &resp,
+		})
+	} else { // normal auth
+		_, retErr = cli.MakeFullRequest(ctx, FullRequest{
+			Method:           http.MethodPost,
+			URL:              cli.BuildClientURL("v3", "login"),
+			RequestJSON:      req,
+			ResponseJSON:     &resp,
+			SensitiveContent: len(req.Password) > 0 || len(req.Token) > 0,
+		})
+	}
+	if req.StoreCredentials && retErr == nil {
 		cli.DeviceID = resp.DeviceID
 		cli.AccessToken = resp.AccessToken
 		cli.UserID = resp.UserID
@@ -787,7 +911,7 @@ func (cli *Client) Login(ctx context.Context, req *ReqLogin) (resp *RespLogin, e
 			Str("device_id", cli.DeviceID.String()).
 			Msg("Stored credentials after login")
 	}
-	if req.StoreHomeserverURL && err == nil && resp.WellKnown != nil && len(resp.WellKnown.Homeserver.BaseURL) > 0 {
+	if req.StoreHomeserverURL && retErr == nil && resp.WellKnown != nil && len(resp.WellKnown.Homeserver.BaseURL) > 0 {
 		var urlErr error
 		cli.HomeserverURL, urlErr = url.Parse(resp.WellKnown.Homeserver.BaseURL)
 		if urlErr != nil {

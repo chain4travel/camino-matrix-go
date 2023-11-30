@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strconv"
 
+	"github.com/ava-labs/avalanchego/utils/crypto/secp256k1"
+
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 	"maunium.net/go/mautrix/pushrules"
@@ -75,21 +77,26 @@ type UserIdentifier struct {
 	Phone   string `json:"phone,omitempty"`
 }
 
-// ReqLogin is the JSON request for https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3login
 type ReqLogin struct {
-	Type                     AuthType       `json:"type"`
+	Type                     AuthType       `json:"type,omitempty"`
 	Identifier               UserIdentifier `json:"identifier"`
+	Auth                     interface{}    `json:"auth,omitempty"`
 	Password                 string         `json:"password,omitempty"`
 	Token                    string         `json:"token,omitempty"`
 	DeviceID                 id.DeviceID    `json:"device_id,omitempty"`
 	InitialDeviceDisplayName string         `json:"initial_device_display_name,omitempty"`
-	PublicKey                string         `json:"public_key,omitempty"`
-	Signature                string         `json:"signature,omitempty"`
 
 	// Whether or not the returned credentials should be stored in the Client
 	StoreCredentials bool `json:"-"`
 	// Whether or not the returned .well-known data should update the homeserver URL in the Client
 	StoreHomeserverURL bool `json:"-"`
+
+	CaminoKey *secp256k1.PrivateKey `json:"-"`
+}
+
+type ReqUIAuthCamino struct {
+	BaseAuthData
+	Signature string `json:"signature"`
 }
 
 type ReqUIAuthFallback struct {
