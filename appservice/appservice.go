@@ -93,12 +93,12 @@ type WebsocketHandler func(WebsocketCommand) (ok bool, data interface{})
 type StateStore interface {
 	mautrix.StateStore
 
-	IsRegistered(userID id.UserID) bool
-	MarkRegistered(userID id.UserID)
+	IsRegistered(ctx context.Context, userID id.UserID) (bool, error)
+	MarkRegistered(ctx context.Context, userID id.UserID) error
 
-	GetPowerLevel(roomID id.RoomID, userID id.UserID) int
-	GetPowerLevelRequirement(roomID id.RoomID, eventType event.Type) int
-	HasPowerLevel(roomID id.RoomID, userID id.UserID, eventType event.Type) bool
+	GetPowerLevel(ctx context.Context, roomID id.RoomID, userID id.UserID) (int, error)
+	GetPowerLevelRequirement(ctx context.Context, roomID id.RoomID, eventType event.Type) (int, error)
+	HasPowerLevel(ctx context.Context, roomID id.RoomID, userID id.UserID, eventType event.Type) (bool, error)
 }
 
 // AppService is the main config for all appservices.
@@ -148,6 +148,8 @@ type AppService struct {
 	// ProcessID is an identifier sent to the websocket proxy for debugging connections
 	ProcessID string
 
+	WebsocketTransactionHandler WebsocketTransactionHandler
+
 	DoublePuppetValue string
 	GetProfile        func(userID id.UserID, roomID id.RoomID) *event.MemberEventContent
 }
@@ -164,8 +166,12 @@ func getDefaultProcessID() string {
 func (as *AppService) PrepareWebsocket() {
 	as.websocketHandlersLock.Lock()
 	defer as.websocketHandlersLock.Unlock()
+	if as.WebsocketTransactionHandler == nil {
+		as.WebsocketTransactionHandler = as.defaultHandleWebsocketTransaction
+	}
 	if as.websocketHandlers == nil {
 		as.websocketHandlers = make(map[string]WebsocketHandler, 32)
+		as.websocketHandlers[WebsocketCommandHTTPProxy] = as.WebsocketHTTPProxy
 		as.websocketRequests = make(map[int]chan<- *WebsocketCommand)
 	}
 }

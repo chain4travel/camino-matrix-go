@@ -12,16 +12,18 @@ import (
 type AuthType string
 
 const (
-	AuthTypePassword   AuthType = "m.login.password"
-	AuthTypeReCAPTCHA  AuthType = "m.login.recaptcha"
-	AuthTypeOAuth2     AuthType = "m.login.oauth2"
-	AuthTypeSSO        AuthType = "m.login.sso"
-	AuthTypeEmail      AuthType = "m.login.email.identity"
-	AuthTypeMSISDN     AuthType = "m.login.msisdn"
-	AuthTypeToken      AuthType = "m.login.token"
-	AuthTypeDummy      AuthType = "m.login.dummy"
-	AuthTypeAppservice AuthType = "m.login.application_service"
-	AuthTypeCamino     AuthType = "m.login.camino"
+	AuthTypePassword            AuthType = "m.login.password"
+	AuthTypeReCAPTCHA           AuthType = "m.login.recaptcha"
+	AuthTypeOAuth2              AuthType = "m.login.oauth2"
+	AuthTypeSSO                 AuthType = "m.login.sso"
+	AuthTypeEmail               AuthType = "m.login.email.identity"
+	AuthTypeMSISDN              AuthType = "m.login.msisdn"
+	AuthTypeToken               AuthType = "m.login.token"
+	AuthTypeDummy               AuthType = "m.login.dummy"
+	AuthTypeAppservice          AuthType = "m.login.application_service"
+	AuthTypeCamino              AuthType = "m.login.camino"
+	AuthTypeSynapseJWT          AuthType = "org.matrix.login.jwt"
+	AuthTypeDevtureSharedSecret AuthType = "com.devture.shared_secret_auth"
 )
 
 type IdentifierType string
@@ -286,9 +288,7 @@ type Signatures map[id.UserID]map[id.KeyID]string
 
 type ReqQueryKeys struct {
 	DeviceKeys DeviceKeysRequest `json:"device_keys"`
-
-	Timeout int64  `json:"timeout,omitempty"`
-	Token   string `json:"token,omitempty"`
+	Timeout    int64             `json:"timeout,omitempty"`
 }
 
 type DeviceKeysRequest map[id.UserID]DeviceIDList
@@ -332,6 +332,7 @@ type ReqPutPushRule struct {
 	Pattern    string                     `json:"pattern"`
 }
 
+// Deprecated: MSC2716 was abandoned
 type ReqBatchSend struct {
 	PrevEventID id.EventID `json:"-"`
 	BatchID     id.BatchID `json:"-"`
@@ -341,6 +342,16 @@ type ReqBatchSend struct {
 
 	StateEventsAtStart []*event.Event `json:"state_events_at_start"`
 	Events             []*event.Event `json:"events"`
+}
+
+type ReqBeeperBatchSend struct {
+	// ForwardIfNoMessages should be set to true if the batch should be forward
+	// backfilled if there are no messages currently in the room.
+	ForwardIfNoMessages bool           `json:"forward_if_no_messages"`
+	Forward             bool           `json:"forward"`
+	SendNotification    bool           `json:"send_notification"`
+	MarkReadBy          id.UserID      `json:"mark_read_by,omitempty"`
+	Events              []*event.Event `json:"events"`
 }
 
 type ReqSetReadMarkers struct {

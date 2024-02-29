@@ -1,4 +1,4 @@
-// Copyright (c) 2023 Tulir Asokan
+// Copyright (c) 2024 Tulir Asokan
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -15,6 +15,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"maunium.net/go/mautrix/crypto/olm"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -78,7 +79,7 @@ func (mach *OlmMachine) DecryptMegolmEvent(ctx context.Context, evt *event.Event
 			trustLevel = id.TrustStateUnknownDevice
 		} else if len(sess.ForwardingChains) == 0 || (len(sess.ForwardingChains) == 1 && sess.ForwardingChains[0] == sess.SenderKey.String()) {
 			if device == nil {
-				log.Debug().Err(err).
+				log.Debug().
 					Str("session_sender_key", sess.SenderKey.String()).
 					Msg("Couldn't resolve trust level of session: sent by unknown device")
 				trustLevel = id.TrustStateUnknownDevice
@@ -90,7 +91,7 @@ func (mach *OlmMachine) DecryptMegolmEvent(ctx context.Context, evt *event.Event
 		} else {
 			forwardedKeys = true
 			lastChainItem := sess.ForwardingChains[len(sess.ForwardingChains)-1]
-			device, _ = mach.CryptoStore.FindDeviceByKey(evt.Sender, id.IdentityKey(lastChainItem))
+			device, _ = mach.CryptoStore.FindDeviceByKey(ctx, evt.Sender, id.IdentityKey(lastChainItem))
 			if device != nil {
 				trustLevel = mach.ResolveTrust(device)
 			} else {
@@ -163,11 +164,31 @@ func removeItem(slice []uint, item uint) ([]uint, bool) {
 
 const missedIndexCutoff = 10
 
+func (mach *OlmMachine) checkUndecryptableMessageIndexDuplication(ctx context.Context, sess *InboundGroupSession, evt *event.Event, content *event.EncryptedEventContent) (uint, error) {
+	log := *zerolog.Ctx(ctx)
+	messageIndex, decodeErr := parseMessageIndex(content.MegolmCiphertext)
+	if decodeErr != nil {
+		log.Warn().Err(decodeErr).Msg("Failed to parse message index to check if it's a duplicate for message that failed to decrypt")
+		return 0, fmt.Errorf("%w (also failed to parse message index)", olm.UnknownMessageIndex)
+	}
+	firstKnown := sess.Internal.FirstKnownIndex()
+	log = log.With().Uint("message_index", messageIndex).Uint32("first_known_index", firstKnown).Logger()
+	if ok, err := mach.CryptoStore.ValidateMessageIndex(ctx, sess.SenderKey, content.SessionID, evt.ID, messageIndex, evt.Timestamp); err != nil {
+		log.Debug().Err(err).Msg("Failed to check if message index is duplicate")
+		return messageIndex, fmt.Errorf("%w (failed to check if index is duplicate; received: %d, earliest known: %d)", olm.UnknownMessageIndex, messageIndex, firstKnown)
+	} else if !ok {
+		log.Debug().Msg("Failed to decrypt message due to unknown index and found duplicate")
+		return messageIndex, fmt.Errorf("%w %d (also failed to decrypt because earliest known index is %d)", DuplicateMessageIndex, messageIndex, firstKnown)
+	}
+	log.Debug().Msg("Failed to decrypt message due to unknown index, but index is not duplicate")
+	return messageIndex, fmt.Errorf("%w (not duplicate index; received: %d, earliest known: %d)", olm.UnknownMessageIndex, messageIndex, firstKnown)
+}
+
 func (mach *OlmMachine) actuallyDecryptMegolmEvent(ctx context.Context, evt *event.Event, encryptionRoomID id.RoomID, content *event.EncryptedEventContent) (*InboundGroupSession, []byte, uint, error) {
 	mach.megolmDecryptLock.Lock()
 	defer mach.megolmDecryptLock.Unlock()
 
-	sess, err := mach.CryptoStore.GetGroupSession(encryptionRoomID, content.SenderKey, content.SessionID)
+	sess, err := mach.CryptoStore.GetGroupSession(ctx, encryptionRoomID, content.SenderKey, content.SessionID)
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("failed to get group session: %w", err)
 	} else if sess == nil {
@@ -177,11 +198,15 @@ func (mach *OlmMachine) actuallyDecryptMegolmEvent(ctx context.Context, evt *eve
 	}
 	plaintext, messageIndex, err := sess.Internal.Decrypt(content.MegolmCiphertext)
 	if err != nil {
+		if errors.Is(err, olm.UnknownMessageIndex) && mach.RatchetKeysOnDecrypt {
+			messageIndex, err = mach.checkUndecryptableMessageIndexDuplication(ctx, sess, evt, content)
+			return sess, nil, messageIndex, fmt.Errorf("failed to decrypt megolm event: %w", err)
+		}
 		return sess, nil, 0, fmt.Errorf("failed to decrypt megolm event: %w", err)
 	} else if ok, err := mach.CryptoStore.ValidateMessageIndex(ctx, sess.SenderKey, content.SessionID, evt.ID, messageIndex, evt.Timestamp); err != nil {
 		return sess, nil, messageIndex, fmt.Errorf("failed to check if message index is duplicate: %w", err)
 	} else if !ok {
-		return sess, nil, messageIndex, DuplicateMessageIndex
+		return sess, nil, messageIndex, fmt.Errorf("%w %d", DuplicateMessageIndex, messageIndex)
 	}
 
 	expectedMessageIndex := sess.RatchetSafety.NextIndex
@@ -225,7 +250,7 @@ func (mach *OlmMachine) actuallyDecryptMegolmEvent(ctx context.Context, evt *eve
 		Int("max_messages", sess.MaxMessages).
 		Logger()
 	if sess.MaxMessages > 0 && int(ratchetTargetIndex) >= sess.MaxMessages && len(sess.RatchetSafety.MissedIndices) == 0 && mach.DeleteFullyUsedKeysOnDecrypt {
-		err = mach.CryptoStore.RedactGroupSession(sess.RoomID, sess.SenderKey, sess.ID(), "maximum messages reached")
+		err = mach.CryptoStore.RedactGroupSession(ctx, sess.RoomID, sess.SenderKey, sess.ID(), "maximum messages reached")
 		if err != nil {
 			log.Err(err).Msg("Failed to delete fully used session")
 			return sess, plaintext, messageIndex, RatchetError
@@ -236,14 +261,14 @@ func (mach *OlmMachine) actuallyDecryptMegolmEvent(ctx context.Context, evt *eve
 		if err = sess.RatchetTo(ratchetTargetIndex); err != nil {
 			log.Err(err).Msg("Failed to ratchet session")
 			return sess, plaintext, messageIndex, RatchetError
-		} else if err = mach.CryptoStore.PutGroupSession(sess.RoomID, sess.SenderKey, sess.ID(), sess); err != nil {
+		} else if err = mach.CryptoStore.PutGroupSession(ctx, sess.RoomID, sess.SenderKey, sess.ID(), sess); err != nil {
 			log.Err(err).Msg("Failed to store ratcheted session")
 			return sess, plaintext, messageIndex, RatchetError
 		} else {
 			log.Info().Msg("Ratcheted session forward")
 		}
 	} else if didModify {
-		if err = mach.CryptoStore.PutGroupSession(sess.RoomID, sess.SenderKey, sess.ID(), sess); err != nil {
+		if err = mach.CryptoStore.PutGroupSession(ctx, sess.RoomID, sess.SenderKey, sess.ID(), sess); err != nil {
 			log.Err(err).Msg("Failed to store updated ratchet safety data")
 			return sess, plaintext, messageIndex, RatchetError
 		} else {

@@ -33,6 +33,8 @@ const (
 	MsgFile     MessageType = "m.file"
 
 	MsgVerificationRequest MessageType = "m.key.verification.request"
+
+	MsgBeeperGallery MessageType = "com.beeper.gallery"
 )
 
 // Format specifies the format of the formatted_body in m.room.message events.
@@ -46,12 +48,12 @@ const (
 
 // RedactionEventContent represents the content of a m.room.redaction message event.
 //
-// The redacted event ID is still at the top level, but will move in a future room version.
-// See https://github.com/matrix-org/matrix-doc/pull/2244 and https://github.com/matrix-org/matrix-doc/pull/2174
-//
-// https://spec.matrix.org/v1.2/client-server-api/#mroomredaction
+// https://spec.matrix.org/v1.8/client-server-api/#mroomredaction
 type RedactionEventContent struct {
 	Reason string `json:"reason,omitempty"`
+
+	// The event ID is here as of room v11. In old servers it may only be at the top level.
+	Redacts id.EventID `json:"redacts,omitempty"`
 }
 
 // ReactionEventContent represents the content of a m.reaction message event.
@@ -97,8 +99,7 @@ type MessageEventContent struct {
 
 	FileName string `json:"filename,omitempty"`
 
-	Mentions         *Mentions `json:"m.mentions,omitempty"`
-	UnstableMentions *Mentions `json:"org.matrix.msc3952.mentions,omitempty"`
+	Mentions *Mentions `json:"m.mentions,omitempty"`
 
 	// Edits and relations
 	NewContent *MessageEventContent `json:"m.new_content,omitempty"`
@@ -111,7 +112,10 @@ type MessageEventContent struct {
 
 	replyFallbackRemoved bool
 
-	MessageSendRetry *BeeperRetryMetadata `json:"com.beeper.message_send_retry,omitempty"`
+	MessageSendRetry         *BeeperRetryMetadata   `json:"com.beeper.message_send_retry,omitempty"`
+	BeeperGalleryImages      []*MessageEventContent `json:"com.beeper.gallery.images,omitempty"`
+	BeeperGalleryCaption     string                 `json:"com.beeper.gallery.caption,omitempty"`
+	BeeperGalleryCaptionHTML string                 `json:"com.beeper.gallery.caption_html,omitempty"`
 }
 
 func (content *MessageEventContent) GetRelatesTo() *RelatesTo {
@@ -147,8 +151,16 @@ func (content *MessageEventContent) SetEdit(original id.EventID) {
 	}
 }
 
+// TextToHTML converts the given text to a HTML-safe representation by escaping HTML characters
+// and replacing newlines with <br/> tags.
 func TextToHTML(text string) string {
 	return strings.ReplaceAll(html.EscapeString(text), "\n", "<br/>")
+}
+
+// ReverseTextToHTML reverses the modifications made by TextToHTML, i.e. replaces <br/> tags with newlines
+// and unescapes HTML escape codes. For actually parsing HTML, use the format package instead.
+func ReverseTextToHTML(input string) string {
+	return html.UnescapeString(strings.ReplaceAll(input, "<br/>", "\n"))
 }
 
 func (content *MessageEventContent) EnsureHasHTML() {
@@ -187,10 +199,14 @@ type FileInfo struct {
 	ThumbnailInfo *FileInfo           `json:"thumbnail_info,omitempty"`
 	ThumbnailURL  id.ContentURIString `json:"thumbnail_url,omitempty"`
 	ThumbnailFile *EncryptedFileInfo  `json:"thumbnail_file,omitempty"`
-	Width         int                 `json:"-"`
-	Height        int                 `json:"-"`
-	Duration      int                 `json:"-"`
-	Size          int                 `json:"-"`
+
+	Blurhash     string `json:"blurhash,omitempty"`
+	AnoaBlurhash string `json:"xyz.amorgan.blurhash,omitempty"`
+
+	Width    int `json:"-"`
+	Height   int `json:"-"`
+	Duration int `json:"-"`
+	Size     int `json:"-"`
 }
 
 type serializableFileInfo struct {
@@ -198,6 +214,9 @@ type serializableFileInfo struct {
 	ThumbnailInfo *serializableFileInfo `json:"thumbnail_info,omitempty"`
 	ThumbnailURL  id.ContentURIString   `json:"thumbnail_url,omitempty"`
 	ThumbnailFile *EncryptedFileInfo    `json:"thumbnail_file,omitempty"`
+
+	Blurhash     string `json:"blurhash,omitempty"`
+	AnoaBlurhash string `json:"xyz.amorgan.blurhash,omitempty"`
 
 	Width    json.Number `json:"w,omitempty"`
 	Height   json.Number `json:"h,omitempty"`
@@ -214,6 +233,9 @@ func (sfi *serializableFileInfo) CopyFrom(fileInfo *FileInfo) *serializableFileI
 		ThumbnailURL:  fileInfo.ThumbnailURL,
 		ThumbnailInfo: (&serializableFileInfo{}).CopyFrom(fileInfo.ThumbnailInfo),
 		ThumbnailFile: fileInfo.ThumbnailFile,
+
+		Blurhash:     fileInfo.Blurhash,
+		AnoaBlurhash: fileInfo.AnoaBlurhash,
 	}
 	if fileInfo.Width > 0 {
 		sfi.Width = json.Number(strconv.Itoa(fileInfo.Width))
@@ -240,6 +262,8 @@ func (sfi *serializableFileInfo) CopyTo(fileInfo *FileInfo) {
 		MimeType:      sfi.MimeType,
 		ThumbnailURL:  sfi.ThumbnailURL,
 		ThumbnailFile: sfi.ThumbnailFile,
+		Blurhash:      sfi.Blurhash,
+		AnoaBlurhash:  sfi.AnoaBlurhash,
 	}
 	if sfi.ThumbnailInfo != nil {
 		fileInfo.ThumbnailInfo = &FileInfo{}

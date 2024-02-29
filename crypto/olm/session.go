@@ -1,3 +1,5 @@
+//go:build !goolm
+
 package olm
 
 // #cgo LDFLAGS: -lolm -lstdc++
@@ -155,6 +157,7 @@ func (s *Session) Unpickle(pickled, key []byte) error {
 	return nil
 }
 
+// Deprecated
 func (s *Session) GobEncode() ([]byte, error) {
 	pickled := s.Pickle(pickleKey)
 	length := base64.RawStdEncoding.DecodedLen(len(pickled))
@@ -163,6 +166,7 @@ func (s *Session) GobEncode() ([]byte, error) {
 	return rawPickled, err
 }
 
+// Deprecated
 func (s *Session) GobDecode(rawPickled []byte) error {
 	if s == nil || s.int == nil {
 		*s = *NewBlankSession()
@@ -173,6 +177,7 @@ func (s *Session) GobDecode(rawPickled []byte) error {
 	return s.Unpickle(pickled, pickleKey)
 }
 
+// Deprecated
 func (s *Session) MarshalJSON() ([]byte, error) {
 	pickled := s.Pickle(pickleKey)
 	quotes := make([]byte, len(pickled)+2)
@@ -182,6 +187,7 @@ func (s *Session) MarshalJSON() ([]byte, error) {
 	return quotes, nil
 }
 
+// Deprecated
 func (s *Session) UnmarshalJSON(data []byte) error {
 	if len(data) == 0 || len(data) == 0 || data[0] != '"' || data[len(data)-1] != '"' {
 		return InputNotJSONString
@@ -326,12 +332,13 @@ func (s *Session) Decrypt(message string, msgType id.OlmMsgType) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
+	messageCopy := []byte(message)
 	plaintext := make([]byte, decryptMaxPlaintextLen)
 	r := C.olm_decrypt(
 		(*C.OlmSession)(s.int),
 		C.size_t(msgType),
-		unsafe.Pointer(&([]byte(message))[0]),
-		C.size_t(len(message)),
+		unsafe.Pointer(&(messageCopy)[0]),
+		C.size_t(len(messageCopy)),
 		unsafe.Pointer(&plaintext[0]),
 		C.size_t(len(plaintext)))
 	if r == errorVal() {

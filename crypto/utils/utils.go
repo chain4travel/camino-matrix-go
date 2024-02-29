@@ -10,16 +10,15 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base64"
-	"math/rand"
 	"strings"
 
+	"go.mau.fi/util/base58"
 	"golang.org/x/crypto/hkdf"
 	"golang.org/x/crypto/pbkdf2"
-
-	"maunium.net/go/mautrix/util/base58"
 )
 
 const (

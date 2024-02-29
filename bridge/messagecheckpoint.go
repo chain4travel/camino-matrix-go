@@ -36,14 +36,16 @@ func (br *Bridge) SendMessageCheckpoint(evt *event.Event, step status.MessageChe
 func (br *Bridge) SendRawMessageCheckpoint(cp *status.MessageCheckpoint) {
 	err := br.SendMessageCheckpoints([]*status.MessageCheckpoint{cp})
 	if err != nil {
-		br.ZLog.Warn().Interface("message_checkpoint", cp).Msg("Error sending message checkpoint")
+		br.ZLog.Warn().Err(err).Interface("message_checkpoint", cp).Msg("Error sending message checkpoint")
+	} else {
+		br.ZLog.Debug().Interface("message_checkpoint", cp).Msg("Sent message checkpoint")
 	}
 }
 
 func (br *Bridge) SendMessageCheckpoints(checkpoints []*status.MessageCheckpoint) error {
 	checkpointsJSON := status.CheckpointsJSON{Checkpoints: checkpoints}
 
-	if br.AS.HasWebsocket() {
+	if br.Websocket {
 		return br.AS.SendWebsocket(&appservice.WebsocketRequest{
 			Command: "message_checkpoint",
 			Data:    checkpointsJSON,
