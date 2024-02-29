@@ -19,6 +19,9 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"maunium.net/go/maulogger/v2/maulogadapt"
 
 	"maunium.net/go/mautrix/event"
@@ -991,8 +994,8 @@ func (cli *Client) SetRoomAccountData(roomID id.RoomID, name string, data interf
 type ReqSendEvent struct {
 	Timestamp     int64
 	TransactionID string
-
-	DontEncrypt bool
+	RequestID     string
+	DontEncrypt   bool
 
 	MeowEventID id.EventID
 }
@@ -1012,6 +1015,11 @@ func (cli *Client) SendMessageEvent(roomID id.RoomID, eventType event.Type, cont
 		txnID = cli.TxnID()
 	}
 
+	var traceID trace.TraceID
+	if len(req.RequestID) > 0 {
+		traceID, err = trace.TraceIDFromHex(req.RequestID)
+	}
+
 	queryParams := map[string]string{}
 	if req.Timestamp > 0 {
 		queryParams["ts"] = strconv.FormatInt(req.Timestamp, 10)
@@ -1020,6 +1028,8 @@ func (cli *Client) SendMessageEvent(roomID id.RoomID, eventType event.Type, cont
 		queryParams["fi.mau.event_id"] = req.MeowEventID.String()
 	}
 
+	ctx := trace.ContextWithRemoteSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{TraceID: traceID}))
+	ctx, span := otel.GetTracerProvider().Tracer("").Start(ctx, "matrix-client.Encrypt")
 	if !req.DontEncrypt && cli.Crypto != nil && eventType != event.EventReaction && eventType != event.EventEncrypted && cli.StateStore.IsEncrypted(roomID) {
 		contentJSON, err = cli.Crypto.Encrypt(roomID, eventType, contentJSON)
 		if err != nil {
@@ -1028,10 +1038,14 @@ func (cli *Client) SendMessageEvent(roomID id.RoomID, eventType event.Type, cont
 		}
 		eventType = event.EventEncrypted
 	}
-
+	span.End()
 	urlData := ClientURLPath{"v3", "rooms", roomID, "send", eventType.String(), txnID}
+	ctx, span = otel.GetTracerProvider().Tracer("").Start(ctx, "matrix-client.BuildURL", trace.WithAttributes(attribute.String("txnID", txnID), attribute.String("eventType", eventType.String())))
 	urlPath := cli.BuildURLWithQuery(urlData, queryParams)
+	span.End()
+	ctx, span = otel.GetTracerProvider().Tracer("").Start(ctx, "matrix-client.Send", trace.WithAttributes(attribute.String("txnID", txnID), attribute.String("eventType", eventType.String())))
 	_, err = cli.MakeRequest("PUT", urlPath, contentJSON, &resp)
+	span.End()
 	return
 }
 
