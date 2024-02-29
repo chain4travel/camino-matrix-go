@@ -195,6 +195,7 @@ func (cli *Client) SyncWithContext(ctx context.Context) error {
 			cli.Log.Debug().Msg("Last sync is old, will stream next response")
 			streamResp = true
 		}
+		ctx, span0 := otel.GetTracerProvider().Tracer("").Start(ctx, "cli.FullSyncRequest")
 		resSync, err := cli.FullSyncRequest(ReqSync{
 			Timeout:        30000,
 			Since:          nextBatch,
@@ -204,6 +205,7 @@ func (cli *Client) SyncWithContext(ctx context.Context) error {
 			Context:        ctx,
 			StreamResponse: streamResp,
 		})
+		span0.End()
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -231,11 +233,22 @@ func (cli *Client) SyncWithContext(ctx context.Context) error {
 		// Save the token now *before* processing it. This means it's possible
 		// to not process some events, but it means that we won't get constantly stuck processing
 		// a malformed/buggy event which keeps making us panic.
+		ctx, span := otel.GetTracerProvider().Tracer("").Start(ctx, "store.SaveNextBatch")
 		cli.Store.SaveNextBatch(cli.UserID, resSync.NextBatch)
+		span.End()
+		//ctx := trace.ContextWithRemoteSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{TraceID: resp.}))
+		t := time.Now()
+		b, err := json.Marshal(resSync)
+		if err != nil {
+			fmt.Println(err)
+		}
+		fmt.Printf("res sync answer: \n %s \n", string(b))
 		if err = cli.Syncer.ProcessResponse(resSync, nextBatch); err != nil {
 			return err
 		}
 
+		_, span2 := otel.GetTracerProvider().Tracer("").Start(ctx, "cryptoSyncer.ProcessResponse", trace.WithTimestamp(t), trace.WithAttributes(attribute.Bool("joinRoomEmpty", len(resSync.Rooms.Join) == 0), attribute.String("next_batch", resSync.NextBatch)))
+		span2.End()
 		nextBatch = resSync.NextBatch
 	}
 }
@@ -648,6 +661,7 @@ func (req *ReqSync) BuildQuery() map[string]string {
 // FullSyncRequest makes an HTTP request according to https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3sync
 func (cli *Client) FullSyncRequest(req ReqSync) (resp *RespSync, err error) {
 	urlPath := cli.BuildURLWithQuery(ClientURLPath{"v3", "sync"}, req.BuildQuery())
+	fmt.Printf("urlPath: %s\n", urlPath)
 	fullReq := FullRequest{
 		Method:       http.MethodGet,
 		URL:          urlPath,

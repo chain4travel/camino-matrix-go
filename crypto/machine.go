@@ -10,6 +10,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"sync"
 	"time"
 
@@ -269,9 +272,11 @@ func (mach *OlmMachine) ProcessSyncResponse(resp *mautrix.RespSync, since string
 			mach.Log.Warn().Str("event_type", evt.Type.Type).Err(err).Msg("Failed to parse to-device event")
 			continue
 		}
+		_, span := otel.GetTracerProvider().Tracer("").Start(context.TODO(), "mach.HandleToDeviceEvent", trace.WithAttributes(attribute.String("event_id", evt.ID.String()), attribute.String("event_type", evt.Type.Type)))
 		mach.HandleToDeviceEvent(evt)
-	}
+		span.End()
 
+	}
 	mach.HandleOTKCounts(&resp.DeviceOTKCount)
 	return true
 }

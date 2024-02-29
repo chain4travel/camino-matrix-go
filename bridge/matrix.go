@@ -15,6 +15,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"go.opentelemetry.io/otel"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/appservice"
 	"maunium.net/go/mautrix/bridge/bridgeconfig"
@@ -461,12 +462,13 @@ func (mx *MatrixHandler) postDecrypt(ctx context.Context, original, decrypted *e
 }
 
 func (mx *MatrixHandler) HandleEncrypted(evt *event.Event) {
+	ctx, span := otel.GetTracerProvider().Tracer("").Start(context.TODO(), "MatrixHandler.HandleEncrypted")
+	defer span.End()
 	defer mx.TrackEventDuration(evt.Type)()
 	if mx.shouldIgnoreEvent(evt) || mx.bridge.Crypto == nil {
 		return
 	}
 	content := evt.Content.AsEncrypted()
-	ctx := context.Background()
 	log := mx.log.With().
 		Str("event_id", evt.ID.String()).
 		Str("session_id", content.SessionID.String()).
