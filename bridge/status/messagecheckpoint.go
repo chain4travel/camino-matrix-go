@@ -11,14 +11,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
+
+	"go.mau.fi/util/jsontime"
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
-	"maunium.net/go/mautrix/util/jsontime"
 )
 
 type MessageCheckpointStep string
@@ -52,15 +52,33 @@ func (mcs MessageCheckpointStep) Before(other MessageCheckpointStep) bool {
 	return mcs.order() < other.order()
 }
 
+func (mcs MessageCheckpointStep) IsValid() bool {
+	switch mcs {
+	case MsgStepClient, MsgStepHomeserver, MsgStepBridge, MsgStepDecrypted, MsgStepRemote, MsgStepCommand:
+		return true
+	}
+	return false
+}
+
 type MessageCheckpointStatus string
 
 const (
-	MsgStatusSuccess     MessageCheckpointStatus = "SUCCESS"
-	MsgStatusWillRetry   MessageCheckpointStatus = "WILL_RETRY"
-	MsgStatusPermFailure MessageCheckpointStatus = "PERM_FAILURE"
-	MsgStatusUnsupported MessageCheckpointStatus = "UNSUPPORTED"
-	MsgStatusTimeout     MessageCheckpointStatus = "TIMEOUT"
+	MsgStatusSuccess        MessageCheckpointStatus = "SUCCESS"
+	MsgStatusWillRetry      MessageCheckpointStatus = "WILL_RETRY"
+	MsgStatusPermFailure    MessageCheckpointStatus = "PERM_FAILURE"
+	MsgStatusUnsupported    MessageCheckpointStatus = "UNSUPPORTED"
+	MsgStatusTimeout        MessageCheckpointStatus = "TIMEOUT"
+	MsgStatusDelivered      MessageCheckpointStatus = "DELIVERED"
+	MsgStatusDeliveryFailed MessageCheckpointStatus = "DELIVERY_FAILED"
 )
+
+func (mcs MessageCheckpointStatus) IsValid() bool {
+	switch mcs {
+	case MsgStatusSuccess, MsgStatusWillRetry, MsgStatusPermFailure, MsgStatusUnsupported, MsgStatusTimeout, MsgStatusDelivered, MsgStatusDeliveryFailed:
+		return true
+	}
+	return false
+}
 
 func ReasonToCheckpointStatus(reason event.MessageStatusReason, status event.MessageStatus) MessageCheckpointStatus {
 	if status == event.MessageStatusPending {
@@ -83,6 +101,14 @@ const (
 	MsgReportedByBridge MessageCheckpointReportedBy = "BRIDGE"
 	MsgReportedByHungry MessageCheckpointReportedBy = "HUNGRYSERV"
 )
+
+func (mcrb MessageCheckpointReportedBy) IsValid() bool {
+	switch mcrb {
+	case MsgReportedByAsmux, MsgReportedByBridge, MsgReportedByHungry:
+		return true
+	}
+	return false
+}
 
 type MessageCheckpoint struct {
 	EventID     id.EventID                  `json:"event_id"`
@@ -162,15 +188,22 @@ func (cj *CheckpointsJSON) SendHTTP(endpoint string, token string) error {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to send message checkpoint: %w", err)
+		return mautrix.HTTPError{
+			Request:  req,
+			Response: resp,
+
+			WrappedError: err,
+			Message:      "failed to send message checkpoint",
+		}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		respBody, _ := io.ReadAll(resp.Body)
-		if respBody != nil {
-			respBody = bytes.ReplaceAll(respBody, []byte("\n"), []byte("\\n"))
+		return mautrix.HTTPError{
+			Request:  req,
+			Response: resp,
+
+			Message: "failed to send message checkpoint",
 		}
-		return fmt.Errorf("unexpected status code %d sending message checkpoint: %s", resp.StatusCode, respBody)
 	}
 	return nil
 }

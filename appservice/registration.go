@@ -10,9 +10,8 @@ import (
 	"os"
 	"regexp"
 
+	"go.mau.fi/util/random"
 	"gopkg.in/yaml.v3"
-
-	"maunium.net/go/mautrix/util"
 )
 
 // Registration contains the data in a Matrix appservice registration.
@@ -34,8 +33,8 @@ type Registration struct {
 // CreateRegistration creates a Registration with random appservice and homeserver tokens.
 func CreateRegistration() *Registration {
 	return &Registration{
-		AppToken:    util.RandomString(64),
-		ServerToken: util.RandomString(64),
+		AppToken:    random.String(64),
+		ServerToken: random.String(64),
 	}
 }
 

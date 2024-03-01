@@ -54,7 +54,7 @@ func fnPingMatrix(ce *Event) {
 		ce.Reply("You are not logged in with your Matrix account.")
 		return
 	}
-	resp, err := puppet.CustomIntent().Whoami()
+	resp, err := puppet.CustomIntent().Whoami(ce.Ctx)
 	if err != nil {
 		ce.Reply("Failed to validate Matrix login: %v", err)
 	} else {
@@ -78,10 +78,6 @@ func fnLogoutMatrix(ce *Event) {
 		ce.Reply("You don't have double puppeting enabled.")
 		return
 	}
-	err := puppet.SwitchCustomMXID("", "")
-	if err != nil {
-		ce.Reply("Failed to disable double puppeting: %v", err)
-		return
-	}
+	puppet.ClearCustomMXID()
 	ce.Reply("Successfully disabled double puppeting.")
 }

@@ -14,14 +14,14 @@ import (
 	"strings"
 
 	"github.com/rs/zerolog"
+	up "go.mau.fi/util/configupgrade"
+	"go.mau.fi/util/dbutil"
+	"go.mau.fi/util/random"
 	"go.mau.fi/zeroconfig"
 	"gopkg.in/yaml.v3"
 
 	"maunium.net/go/mautrix/appservice"
 	"maunium.net/go/mautrix/id"
-	"maunium.net/go/mautrix/util"
-	up "maunium.net/go/mautrix/util/configupgrade"
-	"maunium.net/go/mautrix/util/dbutil"
 )
 
 type HomeserverSoftware string
@@ -50,6 +50,7 @@ type HomeserverConfig struct {
 	StatusEndpoint                string `yaml:"status_endpoint"`
 	MessageSendCheckpointEndpoint string `yaml:"message_send_checkpoint_endpoint"`
 
+	Websocket      bool   `yaml:"websocket"`
 	WSProxy        string `yaml:"websocket_proxy"`
 	WSPingInterval int    `yaml:"ping_interval_seconds"`
 }
@@ -72,7 +73,7 @@ type AppserviceConfig struct {
 }
 
 func (config *BaseConfig) MakeUserIDRegex(matcher string) *regexp.Regexp {
-	usernamePlaceholder := strings.ToLower(util.RandomString(16))
+	usernamePlaceholder := strings.ToLower(random.String(16))
 	usernameTemplate := fmt.Sprintf("@%s:%s",
 		config.Bridge.FormatUsername(usernamePlaceholder),
 		config.Homeserver.Domain)
@@ -89,7 +90,7 @@ func (config *BaseConfig) GenerateRegistration() *appservice.Registration {
 	config.AppService.ASToken = registration.AppToken
 	config.AppService.copyToRegistration(registration)
 
-	registration.SenderLocalpart = util.RandomString(32)
+	registration.SenderLocalpart = random.String(32)
 	botRegex := regexp.MustCompile(fmt.Sprintf("^@%s:%s$",
 		regexp.QuoteMeta(config.AppService.Bot.Username),
 		regexp.QuoteMeta(config.Homeserver.Domain)))
@@ -161,10 +162,17 @@ type BridgeConfig interface {
 	GetEncryptionConfig() EncryptionConfig
 	GetCommandPrefix() string
 	GetManagementRoomTexts() ManagementRoomTexts
+	GetDoublePuppetConfig() DoublePuppetConfig
 	GetResendBridgeInfo() bool
 	EnableMessageStatusEvents() bool
 	EnableMessageErrorNotices() bool
 	Validate() error
+}
+
+type DoublePuppetConfig struct {
+	ServerMap       map[string]string `yaml:"double_puppet_server_map"`
+	AllowDiscovery  bool              `yaml:"double_puppet_allow_discovery"`
+	SharedSecretMap map[string]string `yaml:"login_shared_secret_map"`
 }
 
 type EncryptionConfig struct {
@@ -183,6 +191,7 @@ type EncryptionConfig struct {
 		DeletePrevOnNewSession    bool `yaml:"delete_prev_on_new_session"`
 		DeleteOnDeviceDelete      bool `yaml:"delete_on_device_delete"`
 		PeriodicallyDeleteExpired bool `yaml:"periodically_delete_expired"`
+		DeleteOutdatedInbound     bool `yaml:"delete_outdated_inbound"`
 	} `yaml:"delete_keys"`
 
 	VerificationLevels struct {
@@ -196,6 +205,8 @@ type EncryptionConfig struct {
 		EnableCustom bool  `yaml:"enable_custom"`
 		Milliseconds int64 `yaml:"milliseconds"`
 		Messages     int   `yaml:"messages"`
+
+		DisableDeviceChangeKeyRotation bool `yaml:"disable_device_change_key_rotation"`
 	} `yaml:"rotation"`
 }
 
@@ -225,10 +236,11 @@ func doUpgrade(helper *up.Helper) {
 	helper.Copy(up.Str|up.Null, "homeserver", "message_send_checkpoint_endpoint")
 	helper.Copy(up.Bool, "homeserver", "async_media")
 	helper.Copy(up.Str|up.Null, "homeserver", "websocket_proxy")
+	helper.Copy(up.Bool, "homeserver", "websocket")
 	helper.Copy(up.Int, "homeserver", "ping_interval_seconds")
 
-	helper.Copy(up.Str, "appservice", "address")
-	helper.Copy(up.Str, "appservice", "hostname")
+	helper.Copy(up.Str|up.Null, "appservice", "address")
+	helper.Copy(up.Str|up.Null, "appservice", "hostname")
 	helper.Copy(up.Int|up.Null, "appservice", "port")
 	if dbType, ok := helper.Get(up.Str, "appservice", "database", "type"); ok && dbType == "sqlite3" {
 		helper.Set(up.Str, "sqlite3-fk-wal", "appservice", "database", "type")
@@ -252,6 +264,10 @@ func doUpgrade(helper *up.Helper) {
 	if helper.GetNode("logging", "writers") == nil && (helper.GetNode("logging", "print_level") != nil || helper.GetNode("logging", "file_name_format") != nil) {
 		_, _ = fmt.Fprintln(os.Stderr, "Migrating legacy log config")
 		migrateLegacyLogConfig(helper)
+	} else if helper.GetNode("logging", "writers") == nil && (helper.GetNode("logging", "handlers") != nil) {
+		_, _ = fmt.Fprintln(os.Stderr, "Migrating Python log config is not currently supported")
+		// TODO implement?
+		//migratePythonLogConfig(helper)
 	} else {
 		helper.Copy(up.Map, "logging")
 	}

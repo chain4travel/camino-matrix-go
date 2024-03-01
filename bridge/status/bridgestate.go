@@ -13,13 +13,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"time"
 
 	"github.com/tidwall/sjson"
+	"go.mau.fi/util/jsontime"
+	"golang.org/x/exp/maps"
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/id"
-	"maunium.net/go/mautrix/util/jsontime"
 )
 
 type BridgeStateEvent string
@@ -78,28 +80,37 @@ type BridgeStateFiller interface {
 	GetRemoteName() string
 }
 
+type CustomBridgeStateFiller interface {
+	BridgeStateFiller
+	FillBridgeState(BridgeState) BridgeState
+}
+
 func (pong BridgeState) Fill(user BridgeStateFiller) BridgeState {
 	if user != nil {
 		pong.UserID = user.GetMXID()
 		pong.RemoteID = user.GetRemoteID()
 		pong.RemoteName = user.GetRemoteName()
+
+		if custom, ok := user.(CustomBridgeStateFiller); ok {
+			pong = custom.FillBridgeState(pong)
+		}
 	}
 
 	pong.Timestamp = jsontime.UnixNow()
 	pong.Source = "bridge"
 	if len(pong.Error) > 0 {
-		pong.TTL = 60
+		pong.TTL = 3600
 		msg, ok := BridgeStateHumanErrors[pong.Error]
 		if ok {
 			pong.Message = msg
 		}
 	} else {
-		pong.TTL = 240
+		pong.TTL = 21600
 	}
 	return pong
 }
 
-func (pong *BridgeState) Send(ctx context.Context, url, token string) error {
+func (pong *BridgeState) SendHTTP(ctx context.Context, url, token string) error {
 	var body []byte
 	var err error
 	if body, err = json.Marshal(&pong); err != nil {
@@ -138,8 +149,9 @@ func (pong *BridgeState) Send(ctx context.Context, url, token string) error {
 }
 
 func (pong *BridgeState) ShouldDeduplicate(newPong *BridgeState) bool {
-	if pong == nil || pong.StateEvent != newPong.StateEvent || pong.Error != newPong.Error {
-		return false
-	}
-	return pong.Timestamp.Add(time.Duration(pong.TTL/5) * time.Second).After(time.Now())
+	return pong != nil &&
+		pong.StateEvent == newPong.StateEvent &&
+		pong.Error == newPong.Error &&
+		maps.EqualFunc(pong.Info, newPong.Info, reflect.DeepEqual) &&
+		pong.Timestamp.Add(time.Duration(pong.TTL)*time.Second).After(time.Now())
 }
